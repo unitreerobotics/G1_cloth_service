@@ -1,0 +1,9 @@
+/home/caoboxi/extra/caoboxi/JQ_clothes/build/CMakeFiles/jq_receiver.dir
+/home/caoboxi/extra/caoboxi/JQ_clothes/build/CMakeFiles/JqReceiver.dir
+/home/caoboxi/extra/caoboxi/JQ_clothes/build/CMakeFiles/JqDdsTest.dir
+/home/caoboxi/extra/caoboxi/JQ_clothes/build/CMakeFiles/edit_cache.dir
+/home/caoboxi/extra/caoboxi/JQ_clothes/build/CMakeFiles/rebuild_cache.dir
+/home/caoboxi/extra/caoboxi/JQ_clothes/build/CMakeFiles/list_install_components.dir
+/home/caoboxi/extra/caoboxi/JQ_clothes/build/CMakeFiles/install.dir
+/home/caoboxi/extra/caoboxi/JQ_clothes/build/CMakeFiles/install/local.dir
+/home/caoboxi/extra/caoboxi/JQ_clothes/build/CMakeFiles/install/strip.dir
