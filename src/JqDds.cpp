@@ -2,10 +2,9 @@
 
 #include <chrono>
 #include <cstring>
-#include <iostream>
 #include <thread>
 
-#include "unitree/robot/channel/channel_factory.hpp"
+#include "utils/bp_logger.hpp"
 
 namespace jq {
 
@@ -14,8 +13,7 @@ constexpr double PUBLISH_PERIOD_S = 0.01;  // 100 Hz
 const char* TOPIC_JQ_CLOTH_STATE = "rt/jq_clothstate";
 }
 
-JqDds::JqDds(const std::string& netInterface, int domain) {
-    unitree::robot::ChannelFactory::Instance()->Init(domain, netInterface);
+JqDds::JqDds() {
     publisher_ = std::make_shared<unitree::robot::ChannelPublisher<sensor_msgs::msg::dds_::PointCloud2_>>(TOPIC_JQ_CLOTH_STATE);
     publisher_->InitChannel();
 
@@ -40,7 +38,7 @@ void JqDds::SetData(const JqMergedData& data) {
 void JqDds::Start() {
     running_ = true;
     thread_ = std::thread(&JqDds::Run, this);
-    std::cout << "[DDS] Publisher started, topic: " << TOPIC_JQ_CLOTH_STATE << " @ 100Hz" << std::endl;
+    BP_LOG_I("DDS", "Publisher started, topic: ", TOPIC_JQ_CLOTH_STATE, " @ 100Hz");
 }
 
 void JqDds::Stop() {

@@ -34,7 +34,7 @@ void onClothState(const void* msg)
 
 int main(int argc, char* argv[])
 {
-    const std::string netInterface = (argc > 1) ? argv[1] : "lo";
+    const std::string netInterface = (argc > 1) ? argv[1] : "";
 
     unitree::robot::ChannelFactory::Instance()->Init(0, netInterface);
 
@@ -76,10 +76,10 @@ int main(int argc, char* argv[])
             std::cout << "Sensor data (256 values, 8 bits each):" << std::endl;
             for (int i = 0; i < 256; ++i)
             {
-                if (i % 8 == 0)
+                if (i % 16 == 0)
                     std::printf("  [%3d] ", i);
                 std::printf("%4d", sensor[i]);
-                if (i % 8 == 7)
+                if (i % 16 == 15)
                     std::cout << std::endl;
             }
         }

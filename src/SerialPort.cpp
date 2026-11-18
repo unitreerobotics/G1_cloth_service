@@ -1,10 +1,10 @@
 #include "SerialPort.h"
 #include <stdexcept>
-#include <iostream>
 #include <chrono>
 #include <cstring>
 
-#ifndef _WIN32
+#include "utils/bp_logger.hpp"
+
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
@@ -26,14 +26,9 @@ struct termios2 {
 #define BOTHER 0x00001000
 #endif
 #endif
-#endif
 
 SerialPort::SerialPort()
-#ifdef _WIN32
-    : m_handle(INVALID_HANDLE_VALUE)
-#else
     : m_fd(-1)
-#endif
     , m_isOpen(false)
     , m_running(false)
     , m_timeoutSec(0.1) {
@@ -50,66 +45,33 @@ bool SerialPort::open(const std::string& port, int baudrate, double timeout) {
 
     m_timeoutSec = timeout;
 
-#ifdef _WIN32
-    std::string portName = "\\\\.\\" + port;
-
-    m_handle = CreateFileA(
-        portName.c_str(),
-        GENERIC_READ | GENERIC_WRITE,
-        0,
-        NULL,
-        OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL,
-        NULL
-    );
-
-    if (m_handle == INVALID_HANDLE_VALUE) {
-        DWORD error = GetLastError();
-        std::cerr << "Failed to open port " << port << ", error code: " << error << std::endl;
-        return false;
-    }
-#else
     m_fd = ::open(port.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
     if (m_fd < 0) {
-        std::cerr << "Failed to open port " << port << ": " << strerror(errno) << std::endl;
+        BP_LOG_E("SERIAL", "Failed to open port ", port, ": ", strerror(errno));
         return false;
     }
-#endif
 
     try {
         configurePort(baudrate, timeout);
         m_isOpen = true;
-        std::cout << "Port " << port << " opened, baudrate: " << baudrate << std::endl;
+        BP_LOG_I("SERIAL", "Port ", port, " opened, baudrate: ", baudrate);
         return true;
     }
     catch (const std::exception& e) {
-        std::cerr << "Port configuration failed: " << e.what() << std::endl;
-#ifdef _WIN32
-        CloseHandle(m_handle);
-        m_handle = INVALID_HANDLE_VALUE;
-#else
+        BP_LOG_E("SERIAL", "Port configuration failed: ", e.what());
         ::close(m_fd);
         m_fd = -1;
-#endif
         return false;
     }
 }
 
 void SerialPort::close() {
     stopAsyncRead();
-#ifdef _WIN32
-    if (m_handle != INVALID_HANDLE_VALUE) {
-        CloseHandle(m_handle);
-        m_handle = INVALID_HANDLE_VALUE;
-        m_isOpen = false;
-    }
-#else
     if (m_fd >= 0) {
         ::close(m_fd);
         m_fd = -1;
         m_isOpen = false;
     }
-#endif
     {
         std::lock_guard<std::mutex> lock(m_bufferMutex);
         m_buffer.clear();
@@ -121,42 +83,6 @@ bool SerialPort::isOpen() const {
 }
 
 void SerialPort::configurePort(int baudrate, double timeout) {
-#ifdef _WIN32
-    DCB dcb = { 0 };
-    dcb.DCBlength = sizeof(DCB);
-
-    if (!GetCommState(m_handle, &dcb)) {
-        throw std::runtime_error("Failed to get port state");
-    }
-
-    dcb.BaudRate = baudrate;
-    dcb.ByteSize = 8;
-    dcb.StopBits = ONESTOPBIT;
-    dcb.Parity = NOPARITY;
-    dcb.fBinary = TRUE;
-    dcb.fDtrControl = DTR_CONTROL_DISABLE;
-    dcb.fRtsControl = RTS_CONTROL_DISABLE;
-    dcb.fOutxCtsFlow = FALSE;
-    dcb.fOutxDsrFlow = FALSE;
-
-    if (!SetCommState(m_handle, &dcb)) {
-        throw std::runtime_error("Failed to set port state");
-    }
-
-    COMMTIMEOUTS timeouts = { 0 };
-    timeouts.ReadIntervalTimeout = MAXDWORD;
-    timeouts.ReadTotalTimeoutMultiplier = 0;
-    timeouts.ReadTotalTimeoutConstant = static_cast<DWORD>(timeout * 1000);
-    timeouts.WriteTotalTimeoutMultiplier = 0;
-    timeouts.WriteTotalTimeoutConstant = 1000;
-
-    if (!SetCommTimeouts(m_handle, &timeouts)) {
-        throw std::runtime_error("Failed to set timeouts");
-    }
-
-    SetupComm(m_handle, 4096, 4096);
-    PurgeComm(m_handle, PURGE_RXCLEAR | PURGE_TXCLEAR);
-#else
     (void)timeout;
 
     struct termios tty {};
@@ -254,7 +180,6 @@ void SerialPort::configurePort(int baudrate, double timeout) {
     }
 
     tcflush(m_fd, TCIOFLUSH);
-#endif
 }
 
 void SerialPort::write(const std::vector<uint8_t>& data) {
@@ -262,16 +187,6 @@ void SerialPort::write(const std::vector<uint8_t>& data) {
         throw std::runtime_error("Port not open");
     }
 
-#ifdef _WIN32
-    DWORD bytesWritten;
-    if (!WriteFile(m_handle, data.data(), static_cast<DWORD>(data.size()), &bytesWritten, NULL)) {
-        throw std::runtime_error("Port write failed");
-    }
-
-    if (bytesWritten != data.size()) {
-        throw std::runtime_error("Port write incomplete");
-    }
-#else
     size_t total = 0;
     while (total < data.size()) {
         ssize_t n = ::write(m_fd, data.data() + total, data.size() - total);
@@ -286,7 +201,6 @@ void SerialPort::write(const std::vector<uint8_t>& data) {
         }
         total += static_cast<size_t>(n);
     }
-#endif
 }
 
 std::vector<uint8_t> SerialPort::read(size_t size) {
@@ -296,30 +210,6 @@ std::vector<uint8_t> SerialPort::read(size_t size) {
 
     std::vector<uint8_t> buffer(size);
 
-#ifdef _WIN32
-    DWORD totalRead = 0;
-
-    while (totalRead < size) {
-        DWORD bytesRead = 0;
-        DWORD remaining = static_cast<DWORD>(size - totalRead);
-
-        if (!ReadFile(m_handle, buffer.data() + totalRead, remaining, &bytesRead, NULL)) {
-            DWORD error = GetLastError();
-            if (error == ERROR_TIMEOUT || error == ERROR_IO_PENDING) {
-                break;
-            }
-            throw std::runtime_error("Port read failed");
-        }
-
-        if (bytesRead == 0) {
-            break;
-        }
-
-        totalRead += bytesRead;
-    }
-
-    buffer.resize(totalRead);
-#else
     size_t totalRead = 0;
     auto deadline = std::chrono::steady_clock::now() +
                     std::chrono::duration_cast<std::chrono::steady_clock::duration>(
@@ -365,17 +255,12 @@ std::vector<uint8_t> SerialPort::read(size_t size) {
     }
 
     buffer.resize(totalRead);
-#endif
     return buffer;
 }
 
 void SerialPort::flush() {
     if (m_isOpen) {
-#ifdef _WIN32
-        PurgeComm(m_handle, PURGE_RXCLEAR | PURGE_TXCLEAR);
-#else
         tcflush(m_fd, TCIOFLUSH);
-#endif
     }
     {
         std::lock_guard<std::mutex> lock(m_bufferMutex);
@@ -427,34 +312,6 @@ bool SerialPort::readAvailableData() {
         return false;
     }
 
-#ifdef _WIN32
-    COMSTAT comStat;
-    DWORD errors;
-    if (!ClearCommError(m_handle, &errors, &comStat)) {
-        return false;
-    }
-
-    if (comStat.cbInQue == 0) {
-        return false;
-    }
-
-    DWORD bytesToRead = comStat.cbInQue;
-    std::vector<uint8_t> tempBuffer(bytesToRead);
-
-    DWORD bytesRead = 0;
-    if (!ReadFile(m_handle, tempBuffer.data(), bytesToRead, &bytesRead, NULL)) {
-        return false;
-    }
-
-    if (bytesRead > 0) {
-        tempBuffer.resize(bytesRead);
-        std::lock_guard<std::mutex> lock(m_bufferMutex);
-        m_buffer.insert(m_buffer.end(), tempBuffer.begin(), tempBuffer.end());
-        return true;
-    }
-
-    return false;
-#else
     fd_set rset;
     FD_ZERO(&rset);
     FD_SET(m_fd, &rset);
@@ -476,7 +333,6 @@ bool SerialPort::readAvailableData() {
     std::lock_guard<std::mutex> lock(m_bufferMutex);
     m_buffer.insert(m_buffer.end(), temp, temp + n);
     return true;
-#endif
 }
 
 void SerialPort::processBuffer() {

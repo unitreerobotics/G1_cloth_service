@@ -19,7 +19,7 @@ namespace jq {
 //   data_[16..271] : 256 sensor data, 8 bits each
 class JqDds {
 public:
-    explicit JqDds(const std::string& netInterface, int domain = 0);
+    JqDds();
     ~JqDds();
 
     void Start();

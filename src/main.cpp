@@ -1,97 +1,102 @@
-#include "JqReceiver.h"
+#include "cloth_service.h"
 #include <memory>
 #include "JqDds.hpp"
+#include <atomic>
+#include <chrono>
+#include <csignal>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
+#include <thread>
 
-#ifdef _WIN32
-#include <windows.h>
-#ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
-#define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
-#endif
-#endif
+#include "unitree/common/os.hpp"
+#include "unitree/robot/channel/channel_factory.hpp"
+#include "utils/bp_logger.hpp"
 
-void initConsole()
+namespace {
+
+// 传感服串口为 CH343 USB 转串口（cdc_acm 驱动，节点 /dev/ttyACMx）
+constexpr const char* kUsbVid = "1a86";
+constexpr const char* kUsbPid = "55d3";
+constexpr int kBaudrate = 921600;
+
+std::atomic<bool> g_running{true};
+
+void handleSignal(int)
 {
-#ifdef _WIN32
-    SetConsoleOutputCP(65001);
-    SetConsoleCP(65001);
-
-    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-    DWORD dwMode = 0;
-    GetConsoleMode(hOut, &dwMode);
-    dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
-    SetConsoleMode(hOut, dwMode);
-#endif
+    g_running = false;
 }
 
-void printHelp()
+std::string readFirstLine(const std::filesystem::path& path)
 {
-    std::cout << "\n========== JQ Clothes Receiver Help ==========" << std::endl;
-    std::cout << "The program receives frames from the serial port:" << std::endl;
-    std::cout << "  [0xAA 0x55 0x03 0x99] + [seq] + [sensor type] + [data]" << std::endl;
-    std::cout << "  seq 0x01: first packet,  128 sensor data" << std::endl;
-    std::cout << "  seq 0x02: second packet, 128 sensor data + 16 gyro data" << std::endl;
-    std::cout << "Every two packets are merged into one frame" << std::endl;
-    std::cout << "(272 int = 256 sensor data + 16 gyro data) and printed." << std::endl;
-    std::cout << "\nCommands:" << std::endl;
-    std::cout << "  help   - Show this help" << std::endl;
-    std::cout << "  quit   - Exit program" << std::endl;
-    std::cout << "==============================================" << std::endl;
+    std::ifstream f(path);
+    std::string line;
+    std::getline(f, line);
+    return line;
 }
+
+// 按 USB VID/PID 在 sysfs 中查找串口节点（ttyACM*/ttyUSB* 均适用）
+std::string findSerialPortByVidPid()
+{
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    for (const auto& entry : fs::directory_iterator("/sys/class/tty", ec))
+    {
+        fs::path dev = fs::canonical(entry.path() / "device", ec);
+        if (ec)
+            continue;
+
+        // 沿设备路径向上找到含 idVendor 的 USB 设备层
+        for (fs::path p = dev; p != p.root_path(); p = p.parent_path())
+        {
+            if (!fs::exists(p / "idVendor"))
+                continue;
+            if (readFirstLine(p / "idVendor") == kUsbVid &&
+                readFirstLine(p / "idProduct") == kUsbPid)
+            {
+                return "/dev/" + entry.path().filename().string();
+            }
+            break;
+        }
+    }
+    return {};
+}
+
+} // namespace
 
 int main()
 {
-    initConsole();
+    // 初始化日志：配置文件位于项目根目录 config/（进程目录为 bin/，取 ../config/），
+    // 日志按 default_logconf.json 配置写入 /unitree/var/log/cloth_service（10MB x 3 异步轮转）。
+    bpLogger::getInstance().initialize(
+        unitree::common::OsHelper::Instance()->GetProcessDirectory() + "../config/default_logconf.json");
+    BP_LOG_I("MAIN", "cloth_service starting");
 
-    std::cout << "========================================" << std::endl;
-    std::cout << "     JQ Clothes Receiver Program        " << std::endl;
-    std::cout << "     (Two-packet merge mode)            " << std::endl;
-    std::cout << "========================================" << std::endl;
+    std::signal(SIGINT, handleSignal);
+    std::signal(SIGTERM, handleSignal);
 
+    // 服务开机自启时 USB 设备可能尚未枚举完成，最多等待 30 秒
     std::string port;
-#ifdef _WIN32
-    const char* portHint = "COM19";
-    std::cout << "Enter COM port (e.g. COM19): ";
-#else
-    const char* portHint = "/dev/ttyUSB0";
-    std::cout << "Enter serial port (e.g. /dev/ttyUSB0): ";
-#endif
-    std::getline(std::cin, port);
+    for (int i = 0; i < 60 && g_running; ++i)
+    {
+        port = findSerialPortByVidPid();
+        if (!port.empty())
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
 
     if (port.empty())
     {
-        port = portHint;
-        std::cout << "Using default: " << port << std::endl;
+        BP_LOG_E("MAIN", "Serial device ", kUsbVid, ":", kUsbPid, " not found");
+        return 1;
     }
+    BP_LOG_I("MAIN", "Serial device found: ", port);
 
-    std::string baudStr;
-    std::cout << "Enter baudrate (default 921600): ";
-    std::getline(std::cin, baudStr);
-
-    int baudrate = 921600;
-    if (!baudStr.empty())
-    {
-        try
-        {
-            baudrate = std::stoi(baudStr);
-        }
-        catch (...)
-        {
-            std::cout << "Invalid baudrate, using default 921600" << std::endl;
-        }
-    }
-
-    std::string netInterface;
-    std::cout << "Enter DDS network interface (default enp2s0, empty to skip DDS): ";
-    std::getline(std::cin, netInterface);
-
-    std::unique_ptr<jq::JqDds> dds;
-    if (!netInterface.empty())
-    {
-        dds = std::make_unique<jq::JqDds>(netInterface);
-        dds->Start();
-    }
+    unitree::robot::ChannelFactory::Instance()->Init(0);
+    auto dds = std::make_unique<jq::JqDds>();
+    dds->Start();
+    BP_LOG_I("MAIN", "DDS enabled");
 
     JqReceiver receiver;
     receiver.setMergedDataCallback([&dds](const jq::JqMergedData &data)
@@ -100,42 +105,21 @@ int main()
                                            dds->SetData(data);
                                    });
 
-    if (!receiver.open(port, baudrate))
+    if (!receiver.open(port, kBaudrate))
     {
-        std::cerr << "Initialization failed, exiting" << std::endl;
-#ifdef _WIN32
-        system("pause");
-#endif
+        BP_LOG_E("MAIN", "Failed to open serial port: ", port);
         return 1;
     }
 
-    printHelp();
+    BP_LOG_I("MAIN", "Serial port opened: ", port, " @ ", kBaudrate);
 
-    std::string input;
-    while (true)
+    while (g_running)
     {
-        std::cout << "\n> ";
-        std::getline(std::cin, input);
-
-        if (input.empty())
-            continue;
-
-        if (input == "quit" || input == "exit")
-        {
-            break;
-        }
-
-        if (input == "help")
-        {
-            printHelp();
-            continue;
-        }
-
-        std::cout << "Invalid command, type 'help' for help" << std::endl;
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 
     receiver.close();
-    std::cout << "\nProgram exited" << std::endl;
+    BP_LOG_I("MAIN", "Program exited");
 
     return 0;
 }

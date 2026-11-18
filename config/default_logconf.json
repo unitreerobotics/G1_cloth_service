@@ -1,0 +1,20 @@
+{
+    "Policy": {
+        "/": {
+            "Level": "WARNING",
+            "Store": "default"
+        },
+        "/unitree": {
+            "Level": "INFO",
+            "Store": "default"
+        }
+    },
+    "Store": {
+        "default": {
+            "Type": "FileAsync",
+            "FileSize": 10485760,
+            "FileNumber": 3,
+            "Directory": "/unitree/var/log/cloth_service"
+        }
+    }
+}

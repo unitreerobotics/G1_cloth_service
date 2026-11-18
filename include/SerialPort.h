@@ -11,11 +11,7 @@
 #include <functional>
 #include <chrono>
 
-#ifdef _WIN32
-#include <windows.h>
-#else
 #include <termios.h>
-#endif
 
 class JQ_RECEIVER_API SerialPort {
 public:
@@ -36,11 +32,7 @@ public:
     void stopAsyncRead();
 
 private:
-#ifdef _WIN32
-    HANDLE m_handle;
-#else
     int m_fd;
-#endif
     std::atomic<bool> m_isOpen;
     std::atomic<bool> m_running;
     std::thread m_readThread;
